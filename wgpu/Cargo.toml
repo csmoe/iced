@@ -24,6 +24,7 @@ svg = ["iced_graphics/svg", "resvg/text"]
 web-colors = ["iced_graphics/web-colors"]
 webgl = ["wgpu/webgl"]
 strict-assertions = []
+hack-wgpu = []
 
 [dependencies]
 iced_debug.workspace = true

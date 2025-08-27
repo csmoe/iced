@@ -7,6 +7,29 @@ use crate::graphics::{self, Shell, Viewport};
 use crate::settings::{self, Settings};
 use crate::{Engine, Renderer};
 
+#[cfg(feature = "hack-wgpu")]
+pub mod hack_wgpu {
+    use std::sync::OnceLock;
+    static WGPU_DEVICE: OnceLock<wgpu::Device> = OnceLock::new();
+    static WGPU_QUEUE: OnceLock<wgpu::Queue> = OnceLock::new();
+
+    pub fn get_wgpu_device() -> Option<&'static wgpu::Device> {
+        WGPU_DEVICE.get()
+    }
+
+    pub fn get_wgpu_queue() -> Option<&'static wgpu::Queue> {
+        WGPU_QUEUE.get()
+    }
+
+    pub(crate) fn set_wgpu_device(device: wgpu::Device) {
+        _ = WGPU_DEVICE.set(device);
+    }
+
+    pub(crate) fn set_wgpu_queue(queue: wgpu::Queue) {
+        _ = WGPU_QUEUE.set(queue);
+    }
+}
+
 /// A window graphics backend for iced powered by `wgpu`.
 pub struct Compositor {
     instance: wgpu::Instance,
@@ -182,6 +205,11 @@ impl Compositor {
 
             match result {
                 Ok((device, queue)) => {
+                    #[cfg(feature = "hack-wgpu")]
+                    hack_wgpu::set_wgpu_device(device.clone());
+                    #[cfg(feature = "hack-wgpu")]
+                    hack_wgpu::set_wgpu_queue(queue.clone());
+
                     let engine = Engine::new(
                         &adapter,
                         device,

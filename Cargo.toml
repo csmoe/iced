@@ -83,6 +83,7 @@ unconditional-rendering = ["iced_winit/unconditional-rendering"]
 sipper = ["iced_runtime/sipper"]
 # Enables Linux system theme detection
 linux-theme-detection = ["iced_winit/linux-theme-detection"]
+hack-wgpu = [ "iced_wgpu/hack-wgpu" ]
 
 [dependencies]
 iced_debug.workspace = true

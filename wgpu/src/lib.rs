@@ -33,6 +33,8 @@ pub mod geometry;
 mod buffer;
 mod color;
 mod engine;
+mod instance;
+mod limits;
 mod quad;
 mod text;
 mod triangle;
@@ -66,6 +68,7 @@ use crate::core::{Background, Color, Font, Pixels, Point, Rectangle, Size, Trans
 use crate::graphics::mesh;
 use crate::graphics::text::{Editor, Paragraph};
 use crate::graphics::{Shell, Viewport};
+use crate::instance::Runtime;
 
 /// A [`wgpu`] graphics renderer for [`iced`].
 ///
@@ -874,15 +877,18 @@ impl renderer::Headless for Renderer {
         default_text_size: Pixels,
         backend: Option<&str>,
     ) -> Option<Self> {
-        if backend.is_some_and(|backend| backend != "wgpu") {
-            return None;
-        }
+        let runtime = match backend {
+            None | Some("wgpu") => Runtime::Wgpu,
+            Some("dawn") => Runtime::Dawn,
+            Some(_) => return None,
+        };
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
-            flags: wgpu::InstanceFlags::empty(),
-            ..wgpu::InstanceDescriptor::default()
-        });
+        let instance = instance::create_instance(
+            runtime,
+            wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+            wgpu::InstanceFlags::empty(),
+        )
+        .await?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -893,14 +899,13 @@ impl renderer::Headless for Renderer {
             .await
             .ok()?;
 
+        let required_limits = limits::required_limits(adapter.limits());
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("iced_wgpu [headless]"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits {
-                    max_bind_groups: 2,
-                    ..wgpu::Limits::default()
-                },
+                required_limits,
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),

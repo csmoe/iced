@@ -4,6 +4,9 @@ use crate::graphics::color;
 use crate::graphics::compositor;
 use crate::graphics::error;
 use crate::graphics::{self, Shell, Viewport};
+use crate::instance;
+use crate::instance::Runtime;
+use crate::limits;
 use crate::settings::{self, Settings};
 use crate::{Engine, Renderer};
 
@@ -51,17 +54,21 @@ impl Compositor {
         settings: Settings,
         compatible_window: Option<W>,
         shell: Shell,
+        runtime: Runtime,
     ) -> Result<Self, Error> {
-        let instance = wgpu::util::new_instance_with_webgpu_detection(&wgpu::InstanceDescriptor {
-            backends: settings.backends,
-            flags: if cfg!(feature = "strict-assertions") {
+        let instance = instance::create_instance(
+            runtime,
+            settings.backends,
+            if cfg!(feature = "strict-assertions") {
                 wgpu::InstanceFlags::debugging()
             } else {
                 wgpu::InstanceFlags::empty()
             },
-            ..Default::default()
-        })
-        .await;
+        )
+        .await
+        .ok_or(Error::NoAdapterFound(format!(
+            "runtime backend {runtime:?} unavailable"
+        )))?;
 
         log::info!("{settings:#?}");
 
@@ -142,17 +149,7 @@ impl Compositor {
 
         log::info!("Selected format: {format:?} with alpha mode: {alpha_mode:?}");
 
-        #[cfg(target_arch = "wasm32")]
-        let limits = [wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())];
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let limits = [wgpu::Limits::default(), wgpu::Limits::downlevel_defaults()];
-
-        let limits = limits.into_iter().map(|limits| wgpu::Limits {
-            max_bind_groups: 2,
-            max_non_sampler_bindings: 2048,
-            ..limits
-        });
+        let limits = limits::required_limits(adapter.limits());
 
         // Request SHADER_F16 only if the adapter supports it (e.g., not available in WebGL2)
         let required_features = if adapter.features().contains(wgpu::Features::SHADER_F16) {
@@ -161,47 +158,39 @@ impl Compositor {
             wgpu::Features::empty()
         };
 
-        let mut errors = Vec::new();
+        let result = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("iced_wgpu::window::compositor device descriptor"),
+                required_features,
+                required_limits: limits.clone(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            })
+            .await;
 
-        for required_limits in limits {
-            let result = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("iced_wgpu::window::compositor device descriptor"),
-                    required_features,
-                    required_limits: required_limits.clone(),
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                    trace: wgpu::Trace::Off,
-                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        match result {
+            Ok((device, queue)) => {
+                let engine = Engine::new(
+                    &adapter,
+                    device,
+                    queue,
+                    format,
+                    settings.antialiasing,
+                    shell,
+                );
+
+                Ok(Compositor {
+                    instance,
+                    adapter,
+                    format,
+                    alpha_mode,
+                    engine,
+                    settings,
                 })
-                .await;
-
-            match result {
-                Ok((device, queue)) => {
-                    let engine = Engine::new(
-                        &adapter,
-                        device,
-                        queue,
-                        format,
-                        settings.antialiasing,
-                        shell,
-                    );
-
-                    return Ok(Compositor {
-                        instance,
-                        adapter,
-                        format,
-                        alpha_mode,
-                        engine,
-                        settings,
-                    });
-                }
-                Err(error) => {
-                    errors.push((required_limits, error));
-                }
             }
+            Err(error) => Err(Error::RequestDeviceFailed(vec![(limits, error)])),
         }
-
-        Err(Error::RequestDeviceFailed(errors))
     }
 }
 
@@ -210,8 +199,9 @@ pub async fn new<W: compositor::Window>(
     settings: Settings,
     compatible_window: W,
     shell: Shell,
+    runtime: Runtime,
 ) -> Result<Compositor, Error> {
-    Compositor::request(settings, Some(compatible_window), shell).await
+    Compositor::request(settings, Some(compatible_window), shell, runtime).await
 }
 
 /// Presents the given primitives with the given [`Compositor`].
@@ -274,7 +264,16 @@ impl graphics::Compositor for Compositor {
                     settings.present_mode = present_mode;
                 }
 
-                Ok(new(settings, compatible_window, shell).await?)
+                Ok(new(settings, compatible_window, shell, Runtime::Wgpu).await?)
+            }
+            Some("dawn") => {
+                let mut settings = Settings::from(settings);
+
+                if let Some(present_mode) = settings::present_mode_from_env() {
+                    settings.present_mode = present_mode;
+                }
+
+                Ok(new(settings, compatible_window, shell, Runtime::Dawn).await?)
             }
             Some(backend) => Err(graphics::Error::GraphicsAdapterNotFound {
                 backend: "wgpu",
